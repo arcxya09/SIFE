@@ -5,16 +5,20 @@ from common import *
 import numpy as np
 from sife import ideal, Layer
 from sife.simulation2d import Simulation2D, Options2D
+from sife.simulation_ale import SimulationALE
 
 
-def run(N=100, Nth=16, show=True):
+def run(N=100, Nth=16, show=True, cls=Simulation2D):
     mat = ideal("gas", 1.0, 2.5, 1.0)
     u0 = 1.0e7; t_end = 0.6 / u0
     o = Options2D(degeneracy=False, cond_e=False, cond_i=False, exchange=False, radiation=False,
                   burn=False, verbose=0, dt_max=1e-6, history_every=50, C1=0.1, C2=1.0, cfl=0.25,
                   dt_init=1e-13, snap_dt=1.0)
-    sim = Simulation2D([Layer(mat, 1.0, N, T0=1e-3)], n_theta=Nth, half=True, opts=o)
-    sim.ur[1:] = -u0
+    sim = cls([Layer(mat, 1.0, N, T0=1e-3)], n_theta=Nth, half=True, opts=o)
+    if hasattr(sim, "vr"):
+        sim.vr[:] = -u0
+    else:
+        sim.ur[1:] = -u0
     sim.E0 = sim.total_energy()
     sim.run(t_end)
     g = sim.geometry()

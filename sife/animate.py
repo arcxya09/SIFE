@@ -219,7 +219,29 @@ def animate_2d(run_dir, out=None, fps=15, gif=True, max_frames=500, fields=("rho
 
     half = bool(S["half"]) if "half" in S else False
     mat = S["mat"][:, 0] if "mat" in S else np.zeros(z.shape[1] - 1)
-    rings = sorted(set(range(0, z.shape[1], 10)) | set(np.nonzero(np.diff(mat))[0] + 1) | {z.shape[1] - 1})
+    ale = "X" in S                          # ALE run: material interfaces from the mass fractions
+    if ale:
+        rings = sorted(set(range(0, z.shape[1], 10)) | {z.shape[1] - 1})
+        iface = LineCollection([], colors=[(1, 1, 1, 0.9)], linewidths=0.8)
+        ax.add_collection(iface)
+    else:
+        rings = sorted(set(range(0, z.shape[1], 10)) | set(np.nonzero(np.diff(mat))[0] + 1) | {z.shape[1] - 1})
+
+    def interfaces(i):
+        X = S["X"][i]; zc = S["zc"][i] * 1e4; Rc = S["Rc"][i] * 1e4
+        segs = []
+        for k in range(X.shape[0] - 1):
+            f = X[:k + 1].sum(0)            # fraction of materials 0..k
+            pts = []
+            for j in range(f.shape[1]):
+                c = np.nonzero((f[:-1, j] >= 0.5) & (f[1:, j] < 0.5))[0]
+                if len(c) == 0:
+                    continue
+                a = c[-1]; w = (f[a, j] - 0.5) / max(f[a, j] - f[a + 1, j], 1e-30)
+                pts.append([Rc[a, j] + w * (Rc[a + 1, j] - Rc[a, j]), zc[a, j] + w * (zc[a + 1, j] - zc[a, j])])
+            if len(pts) > 1:
+                segs.append(np.array(pts))
+        return segs
 
     def draw(i):
         Z, X = z[i], R[i]
@@ -237,6 +259,11 @@ def animate_2d(run_dir, out=None, fps=15, gif=True, max_frames=500, fields=("rho
         if half:
             segs += [sg * np.array([1.0, -1.0]) for sg in segs]
         mesh.set_segments(segs)
+        if ale:
+            sg = interfaces(i)
+            if half:
+                sg += [p * np.array([1.0, -1.0]) for p in sg]
+            iface.set_segments(sg)
         L = xmax[i]
         ax.set_xlim(-L, L); ax.set_ylim(-L, L)
         rr = np.sqrt(S["zc"][i] ** 2 + S["Rc"][i] ** 2) * 1e4

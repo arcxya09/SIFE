@@ -26,16 +26,16 @@ def gamma_theory(l, g, R=R0):
     return np.sqrt(g / R * l * (l + 1) * (RHO2 - RHO1) / (l * RHO2 + (l + 1) * RHO1))
 
 
-def setup(l, Nth, hg, eps, gamma_target=2e7, N1=100, N2=30):
+def setup(l, Nth, hg, eps, gamma_target=2e7, N1=100, N2=30, cls=Simulation2D):
     g = gamma_target ** 2 / gamma_theory(l, 1.0) ** 2
     o = Options2D(degeneracy=False, cond_e=False, cond_i=False, exchange=False, radiation=False, burn=False,
                   verbose=0, dt_max=1e-9, history_every=10 ** 9, cfl=0.3, dt_init=1e-12, snap_dt=1.0,
                   fix_outer=True, core_rings=N1 // 2, gravity=g, hourglass=hg)
     layers = [Layer(ideal("light", 1.0, 1.0, RHO1), R0, N1, T0=T_TOP), Layer(ideal("heavy", 1.0, 1.0, RHO2), D2, N2, T0=T_TOP)]
-    sim = Simulation2D(layers, n_theta=Nth, half=True, opts=o, perturbations=[(0, l, eps)])
+    sim = cls(layers, n_theta=Nth, half=True, opts=o, perturbations=[(0, l, eps)])
     # discrete hydrostatic pressure (exact for the symmetric 1D state), integrated inward from the wall
     r = sim.r.mean(axis=1)
-    rho = np.where(sim.mat[:, 0] == 0, RHO1, RHO2)
+    rho = sim.rho.mean(axis=1)
     mz = rho * 4 * np.pi / 3 * np.diff(r ** 3)
     P = np.empty(sim.Ni)
     n_top = rho[-1] / (1.0 * C.mu)
@@ -52,6 +52,8 @@ def setup(l, Nth, hg, eps, gamma_target=2e7, N1=100, N2=30):
 
 
 def interface_amp(sim, l):
+    if hasattr(sim, "X"):           # Godunov ALE: interface from the mass fractions
+        return sim.legendre_amp(sim.interface_radius(0), l)[0]
     k = int(np.argmax(sim.mat[:, 0] == 1))
     rr = sim.r[k]; th = sim.theta; w = np.sin(th)
     P = legendre(l, np.cos(th))
@@ -59,8 +61,8 @@ def interface_amp(sim, l):
     return np.trapezoid((rr - r0) * P * w, th) / np.trapezoid(P * P * w, th)
 
 
-def growth(l=20, Nth=64, hg=0.05, eps=2e-4, n_efold=3.0):
-    sim, g = setup(l, Nth, hg, eps)
+def growth(l=20, Nth=64, hg=0.05, eps=2e-4, n_efold=3.0, cls=Simulation2D):
+    sim, g = setup(l, Nth, hg, eps, cls=cls)
     gth = gamma_theory(l, g)
     t_end = n_efold / gth
     ts, a = [0.0], [interface_amp(sim, l)]
@@ -75,16 +77,23 @@ def growth(l=20, Nth=64, hg=0.05, eps=2e-4, n_efold=3.0):
                 amp_growth=float(a[-1] / a[0])), ts * gth, a / a[0]
 
 
-def run(show=True, cases=((20, 64, 0.05), (20, 64, 0.0), (8, 32, 0.05), (8, 32, 0.0), (8, 16, 0.05), (8, 16, 0.0))):
+def run(show=True, cases=((20, 64, "ale", 0.0), (20, 64, "lag", 0.05), (20, 64, "lag", 0.0),
+                          (8, 32, "ale", 0.0), (8, 32, "lag", 0.05), (8, 32, "lag", 0.0),
+                          (8, 16, "ale", 0.0), (8, 16, "lag", 0.0))):
+    from sife.simulation_ale import SimulationALE
     res = []
     if show:
-        fig, ax = plt.subplots(figsize=(6.5, 4))
-    for (l, Nth, hg) in cases:
-        d, tt, aa = growth(l, Nth, hg)
+        fig, ax = plt.subplots(figsize=(7, 4.5))
+    for (l, Nth, solver, hg) in cases:
+        cls = SimulationALE if solver == "ale" else Simulation2D
+        d, tt, aa = growth(l, Nth, hg, cls=cls)
+        d["solver"] = solver
         res.append(d)
         print(d, flush=True)
         if show:
-            ax.semilogy(tt, aa, label=f"l={l}, {Nth} zones/90deg, hg={hg}: gamma/theory={d['ratio']:.2f}")
+            lab = "ALE" if solver == "ale" else f"Lagrangian hg={hg}"
+            ax.semilogy(tt, aa, "-" if solver == "ale" else ":",
+                        label=f"l={l}, {Nth} zones/90deg, {lab}: gamma/theory={d['ratio']:.2f}")
     if show:
         tt = np.linspace(0, 3, 50)
         ax.semilogy(tt, np.cosh(tt), "k--", label="linear theory cosh(gamma t)")

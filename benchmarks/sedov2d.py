@@ -10,13 +10,13 @@ from sife.simulation2d import Simulation2D, Options2D
 XI0 = 1.1517
 
 
-def run(N=100, Nth=16, half=True, show=True):
+def run(N=100, Nth=16, half=True, show=True, cls=Simulation2D):
     mat = ideal("gas", 1.0, 2.5, 1.0)
     E = 1.0e16; rho0 = 1.0
     o = Options2D(degeneracy=False, cond_e=False, cond_i=False, exchange=False, radiation=False,
                   burn=False, verbose=0, dt_max=1e-6, history_every=50, C1=0.1, C2=1.0, cfl=0.25,
                   dt_init=1e-15, snap_dt=1.0)
-    sim = Simulation2D([Layer(mat, 1.0, N, T0=1e-3)], n_theta=Nth, half=half, opts=o)
+    sim = cls([Layer(mat, 1.0, N, T0=1e-3)], n_theta=Nth, half=half, opts=o)
     nhot = 2
     sim.ei[:nhot] += (E / sim.sym) / sim.m[:nhot].sum()
     sim._eos(); sim.E0 = sim.total_energy()

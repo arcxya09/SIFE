@@ -73,6 +73,11 @@ def legendre(l, x):
 @dataclass
 class Options2D(Options):
     gravity: float = 0.0          # uniform inward radial acceleration [cm/s^2] (test problems; not in E budget)
+    dual_energy: bool = True      # ALE: pdV ion energy outside shocks (else total-energy based everywhere)
+    dual_eta: float = 0.01        # ALE: internal / kinetic ratio below which the pdV ion energy is used
+    shock_jump: float = 0.3       # ALE: relative pressure jump that marks a shock (dual energy)
+    mesh_motion: str = "contact"  # ALE ring motion: "contact" (mean HLLC S*, Lagrangian in 1D) or "mass"
+    mesh_qmin: float = 0.2        # ALE: limit on neighbouring cell-size ratio relative to the initial mesh
     axis_tie: bool = True         # axis nodes move rigidly with their neighbour spoke
     hourglass_visc: float = 0.0   # viscous anti-hourglass on the angular sawtooth of u_r
     hourglass_order: int = 4      # 4 or 6: order of the difference that detects the angular sawtooth
@@ -319,13 +324,9 @@ class Simulation2D:
         return {k: np.array(v) for k, v in self.hist.items()}
 
     # ------------------------------------------------------------------ step
-    def step(self):
-        o = self.o
-        Ni, Nj = self.Ni, self.Nj
-        dt = self.dt
+    def _laser(self, dt):
+        """Laser deposition for this step (fills self.Pdep); returns (P_laser, P_abs)."""
         s = self.sym
-        Te_old = self.Te.copy(); Ti_old = self.Ti.copy()
-        V_old = self.m / self.rho
         # 1. laser (power per sector; the domain receives 1/sym of the total)
         P_laser = 0.0; P_abs = 0.0
         if self.laser is not None:
@@ -347,24 +348,13 @@ class Simulation2D:
                 self.Pdep[:] = 0.0
             self.E_laser += P_laser * dt
             self.E_abs += P_abs * dt
-        # 2. hydro (Lagrangian phase + angular remap)
-        if o.hydro:
-            F = self._flat
-            dVt = np.zeros((Ni, Nj + 1))
-            self.E_visc += s * hydro_sph_step(dt, self.r, self.theta, self.gs, self.gW, self.ur, self.ut, self.m,
-                                              self.Mnode, self.rho, self.ee, self.ei, self.er, F(self.Zb),
-                                              F(self.Ab_mu), F(self.rho0), F(self.Pd0), F(self.B0), F(self.solid),
-                                              self.deg, F(self.Te), F(self.Ti), F(self.Pe), F(self.Pi), F(self.Pc),
-                                              F(self.cs2), F(self.Cve), F(self.Cvi), self.qr, self.qt, o.C1, o.C2,
-                                              o.hourglass, self.half, o.fix_outer, dVt, o.core_rings, o.axis_tie,
-                                              o.gravity, o.hourglass_ut, o.hourglass_order, o.hourglass_visc)
-            if o.core_rings > 0:
-                self._mix_core()
-            if Nj > 1:
-                self.E_remap_heat += s * remap_theta(self.r, self.theta, self.gs, self.gW, self.m, self.Mnode,
-                                                     self.rho, self.ee, self.ei, self.er, self.yDT, self.ur,
-                                                     self.ut, dVt, o.remap_order == 2, self.half)
-                self._eos()
+        return P_laser, P_abs
+
+    def _diffuse_burn(self, dt, P_abs):
+        """3T diffusion with the laser source, then burn and alpha deposition."""
+        o = self.o
+        Ni, Nj = self.Ni, self.Nj
+        s = self.sym
         # 3. diffusion
         if o.cond_e or o.cond_i or o.exchange or o.radiation or P_abs > 0:
             geo = self.geometry()
@@ -405,6 +395,34 @@ class Simulation2D:
                 self.E_alpha_dep += s * (de.sum() + di.sum())
                 self.E_alpha_esc += s * esc
                 self._eos()
+
+    def step(self):
+        o = self.o
+        Ni, Nj = self.Ni, self.Nj
+        dt = self.dt
+        s = self.sym
+        Te_old = self.Te.copy(); Ti_old = self.Ti.copy()
+        V_old = self.m / self.rho
+        P_laser, P_abs = self._laser(dt)
+        # 2. hydro (Lagrangian phase + angular remap)
+        if o.hydro:
+            F = self._flat
+            dVt = np.zeros((Ni, Nj + 1))
+            self.E_visc += s * hydro_sph_step(dt, self.r, self.theta, self.gs, self.gW, self.ur, self.ut, self.m,
+                                              self.Mnode, self.rho, self.ee, self.ei, self.er, F(self.Zb),
+                                              F(self.Ab_mu), F(self.rho0), F(self.Pd0), F(self.B0), F(self.solid),
+                                              self.deg, F(self.Te), F(self.Ti), F(self.Pe), F(self.Pi), F(self.Pc),
+                                              F(self.cs2), F(self.Cve), F(self.Cvi), self.qr, self.qt, o.C1, o.C2,
+                                              o.hourglass, self.half, o.fix_outer, dVt, o.core_rings, o.axis_tie,
+                                              o.gravity, o.hourglass_ut, o.hourglass_order, o.hourglass_visc)
+            if o.core_rings > 0:
+                self._mix_core()
+            if Nj > 1:
+                self.E_remap_heat += s * remap_theta(self.r, self.theta, self.gs, self.gW, self.m, self.Mnode,
+                                                     self.rho, self.ee, self.ei, self.er, self.yDT, self.ur,
+                                                     self.ut, dVt, o.remap_order == 2, self.half)
+                self._eos()
+        self._diffuse_burn(dt, P_abs)
         self.t += dt
         self.nstep += 1
         # 5. next dt

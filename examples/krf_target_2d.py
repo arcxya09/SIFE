@@ -18,12 +18,13 @@ sys.path.insert(0, HERE)
 import numpy as np
 from sife import Layer, Laser, tabulated_pulse, DT_gas, DT_ice, CH_foam_DT
 from sife.simulation2d import Simulation2D, Options2D
+from sife.simulation_ale import SimulationALE
 from sife.qvalue import q_values, format_q
 from sife.fusion import sigv_DT
 from krf_target import DEFAULT
 
 
-def build(p, n_theta=16, half=True, illum=None, pert=None, zone_scale=1.0, verbose=1, core=-1):
+def build(p, n_theta=16, half=True, illum=None, pert=None, zone_scale=1.0, verbose=1, core=-1, solver="ale"):
     gas, ice = DT_gas(p.get("rho_gas", 3.0e-4)), DT_ice(0.25)
     foam = CH_foam_DT(p["rho_foam"], 0.25)
     nz = [max(4, int(round(n * zone_scale))) for n in p["zones"][:3]]
@@ -35,14 +36,15 @@ def build(p, n_theta=16, half=True, illum=None, pert=None, zone_scale=1.0, verbo
               fine_out=p.get("fine_foam_out", 1.04) ** (1 / zone_scale)),
     ]
     if core < 0:      # default: the whole gas region is the quasi-1D (isobaric) core
-        core = nz[0]
+        core = nz[0] if solver == "lag" else 2
     pulse = tabulated_pulse(p["t_ns"], p["P_TW"])
     R0 = p["R_gas"] + p["d_ice"] + p["d_foam"]
     laser = Laser(wavelength_um=0.248, power=pulse, n_rays=p["n_rays"], profile_order=p["beam_order"])
     snap = lambda t: 0.1e-9 if t < 9.3e-9 else 0.01e-9
     o = Options2D(verbose=verbose, dt_init=1e-13, dt_max=5e-12, snap_dt=snap, history_every=5,
                   alpha_n_mu=8, core_rings=core)
-    sim = Simulation2D(layers, n_theta=n_theta, half=half, opts=o, laser=laser,
+    cls = SimulationALE if solver == "ale" else Simulation2D
+    sim = cls(layers, n_theta=n_theta, half=half, opts=o, laser=laser,
                        illumination=illum, perturbations=pert)
     if p["zoom"]:
         def Rb(t, sim=sim):
@@ -103,6 +105,8 @@ def main():
     ap.add_argument("--rough", nargs="*", help="interface:lmin:lmax:rms_um  multimode roughness, random amplitudes "
                     "with a flat spectrum, normalised to the given rms (seed --seed)")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--solver", choices=["ale", "lag"], default="ale",
+                    help="ale: Godunov ALE (resolves RT growth); lag: old Lagrangian + anti-hourglass")
     ap.add_argument("--core", type=int, default=-1,
                     help="innermost rings treated as a quasi-1D isobaric core (default -1: all gas rings)")
     ap.add_argument("--hg", type=float, default=None, help="anti-hourglass stiffness (default Options2D.hourglass)")
@@ -125,7 +129,7 @@ def main():
         c *= rms * 1e-4 / np.sqrt(np.sum(c ** 2 / (2 * ls + 1)))
         pert += [(k, int(l), float(cl)) for l, cl in zip(ls, c)]
     os.makedirs(a.out, exist_ok=True)
-    sim = build(p, a.nth, not a.full, illum, pert, a.zone_scale, core=a.core)
+    sim = build(p, a.nth, not a.full, illum, pert, a.zone_scale, core=a.core, solver=a.solver)
     print(f"2D mesh {sim.Ni} x {sim.Nj} zones, illumination {illum}, perturbations {pert}", flush=True)
     if a.no_burn:
         sim.o.burn = False
@@ -144,7 +148,7 @@ def main():
             s.hist.get("Ti_max") and s.Ti.max() < 0.3 * max(s.hist["Ti_max"])
     sim.run((a.t_end or p["t_end_ns"]) * 1e-9, stop=stop, wall_limit=a.wall)
     d = diagnostics(sim)
-    d["mesh"] = [sim.Ni, sim.Nj]; d["core_rings"] = sim.o.core_rings; d["half"] = bool(sim.half); d["illumination"] = illum
+    d["mesh"] = [sim.Ni, sim.Nj]; d["solver"] = a.solver; d["core_rings"] = sim.o.core_rings; d["half"] = bool(sim.half); d["illumination"] = illum
     d["perturbations_cm"] = pert
     print(json.dumps(d, indent=1))
     print(format_q(d["Q"]))
