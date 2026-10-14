@@ -74,6 +74,9 @@ def legendre(l, x):
 class Options2D(Options):
     gravity: float = 0.0          # uniform inward radial acceleration [cm/s^2] (test problems; not in E budget)
     axis_tie: bool = True         # axis nodes move rigidly with their neighbour spoke
+    hourglass_visc: float = 0.0   # viscous anti-hourglass on the angular sawtooth of u_r
+    hourglass_order: int = 4      # 4 or 6: order of the difference that detects the angular sawtooth
+    hourglass_ut: float = 0.5     # viscous damping of the radial zig-zag of u_theta along a spoke
     hourglass: float = 0.05       # anti-hourglass stiffness on the angular sawtooth of node radii
     remap_order: int = 2          # 1: donor cell, 2: van Leer limited angular remap
     core_rings: int = 0           # innermost rings treated as a quasi-1D core (no angular motion,
@@ -354,7 +357,7 @@ class Simulation2D:
                                               self.deg, F(self.Te), F(self.Ti), F(self.Pe), F(self.Pi), F(self.Pc),
                                               F(self.cs2), F(self.Cve), F(self.Cvi), self.qr, self.qt, o.C1, o.C2,
                                               o.hourglass, self.half, o.fix_outer, dVt, o.core_rings, o.axis_tie,
-                                              o.gravity)
+                                              o.gravity, o.hourglass_ut, o.hourglass_order, o.hourglass_visc)
             if o.core_rings > 0:
                 self._mix_core()
             if Nj > 1:

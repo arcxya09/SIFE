@@ -177,7 +177,17 @@ def _zone_q(r, ur, ut, rho, cs2, C1, C2, qr, qe, qt):
 
 
 @njit(cache=True)
-def _forces_sph(r, theta, s, W, P, qe, qt, rho, cs2, hg, Fr, Ft, S, core):
+def _mir(j, Nj):
+    """Spoke index mirrored at the axis (j < 0) and at the equator / far axis (j > Nj)."""
+    if j < 0:
+        return -j
+    if j > Nj:
+        return 2 * Nj - j
+    return j
+
+
+@njit(cache=True)
+def _forces_sph(r, theta, s, W, P, qe, qt, rho, cs2, hg, Fr, Ft, S, core, PfL, PfR, hgo):
     """Radial nodal forces, angular nodal forces and spoke-face areas."""
     Ni, Nj = P.shape
     Fr[:, :] = 0.0
@@ -192,10 +202,29 @@ def _forces_sph(r, theta, s, W, P, qe, qt, rho, cs2, hg, Fr, Ft, S, core):
             Fr[i + 1, j] += P0 * b0
             Fr[i + 1, j + 1] += P1 * b1
     spoke_areas(r, theta, S)
+    # zone pressures at their spoke faces.  The zones of one ring sit at different
+    # radii once the ring is tilted, so the raw difference P[i, j-1] - P[i, j] contains
+    # the background radial gradient times the tilt, a spurious tangential force of the
+    # same size as the Rayleigh-Taylor drive (it stabilises unstable and destabilises
+    # stable stratification).  The pressure is therefore carried to the face mid-radius
+    # with its limited radial gradient along the zone's own column.
+    for i in range(Ni):
+        for j in range(Nj):
+            rc = 0.25 * (r[i, j] + r[i, j + 1] + r[i + 1, j] + r[i + 1, j + 1])
+            g = 0.0
+            if 0 < i < Ni - 1:
+                rm = 0.25 * (r[i - 1, j] + r[i - 1, j + 1] + r[i, j] + r[i, j + 1])
+                rp = 0.25 * (r[i + 1, j] + r[i + 1, j + 1] + r[i + 2, j] + r[i + 2, j + 1])
+                gm = (P[i, j] - P[i - 1, j]) / max(rc - rm, 1e-300)
+                gp = (P[i + 1, j] - P[i, j]) / max(rp - rc, 1e-300)
+                if gm * gp > 0.0:
+                    g = gm if abs(gm) < abs(gp) else gp
+            PfL[i, j] = P[i, j] + g * (0.5 * (r[i, j] + r[i + 1, j]) - rc)
+            PfR[i, j] = P[i, j] + g * (0.5 * (r[i, j + 1] + r[i + 1, j + 1]) - rc)
     for i in range(core, Ni):
         for j in range(1, Nj):
             # spoke face (i, j) between zones (i, j-1) and (i, j); half to each end node
-            dP = (P[i, j - 1] + qt[i, j - 1]) - (P[i, j] + qt[i, j])
+            dP = (PfR[i, j - 1] + qt[i, j - 1]) - (PfL[i, j] + qt[i, j])
             f = 0.5 * S[i, j] * dP
             Ft[i, j] += f
             Ft[i + 1, j] += f
@@ -211,12 +240,17 @@ def _forces_sph(r, theta, s, W, P, qe, qt, rho, cs2, hg, Fr, Ft, S, core):
             izm = i - 1
             for j in range(0, Nj + 1):
                 # neighbours, mirrored at the axis (j = 0) and at the equator / far axis (j = Nj)
-                jm1 = j - 1 if j >= 1 else 1 - j
-                jm2 = j - 2 if j >= 2 else 2 - j
-                jp1 = j + 1 if j + 1 <= Nj else 2 * Nj - j - 1
-                jp2 = j + 2 if j + 2 <= Nj else 2 * Nj - j - 2
-                interp = (-r[i, jm2] + 4.0 * r[i, jm1] + 4.0 * r[i, jp1] - r[i, jp2]) / 6.0
-                h = r[i, j] - interp
+                if hgo == 6:
+                    # 6th difference, scaled so that the sawtooth sees the same force as
+                    # with the 4th difference; smooth modes feel (k dtheta)^2 / 4 of it
+                    d6 = (r[i, _mir(j - 3, Nj)] - 6.0 * r[i, _mir(j - 2, Nj)] + 15.0 * r[i, _mir(j - 1, Nj)]
+                          - 20.0 * r[i, j] + 15.0 * r[i, _mir(j + 1, Nj)] - 6.0 * r[i, _mir(j + 2, Nj)]
+                          + r[i, _mir(j + 3, Nj)])
+                    h = -d6 / 24.0
+                else:
+                    interp = (-r[i, _mir(j - 2, Nj)] + 4.0 * r[i, _mir(j - 1, Nj)] + 4.0 * r[i, _mir(j + 1, Nj)]
+                              - r[i, _mir(j + 2, Nj)]) / 6.0
+                    h = r[i, j] - interp
                 rr = r[i, j]
                 ja = j - 1 if j >= 1 else 0
                 jb = j if j < Nj else Nj - 1
@@ -235,7 +269,7 @@ def _forces_sph(r, theta, s, W, P, qe, qt, rho, cs2, hg, Fr, Ft, S, core):
 @njit(cache=True)
 def hydro_sph_step(dt, r, theta, s, W, ur, ut, m, M, rho, ee, ei, er,
                    Zb, Ab_mu, rho0, Pd0, B0, solid, deg,
-                   Te, Ti, Pe, Pi, Pc, cs2, Cve, Cvi, qr, qt, C1, C2, hg, half, fix_outer, dVt, core, tie=True, grav=0.0):
+                   Te, Ti, Pe, Pi, Pc, cs2, Cve, Cvi, qr, qt, C1, C2, hg, half, fix_outer, dVt, core, tie=True, grav=0.0, hgt=0.5, hgo=4, hgv=0.0):
     """Lagrangian phase.  Updates r, ur, ut and the energies in place, fills the
     angular swept volumes dVt[i, j] (face j of ring i) for the remap and returns the
     viscous heating [erg].  rho on exit is the Lagrangian density.  Rings i < core
@@ -279,7 +313,8 @@ def hydro_sph_step(dt, r, theta, s, W, ur, ut, m, M, rho, ee, ei, er,
     qe = np.empty((Ni, Nj, 2))
     _zone_q(r, ur, ut, rhoh, cs2h2, C1, C2, qr, qe, qt)
     Fr = np.zeros(r.shape); Ft = np.zeros(r.shape)
-    _forces_sph(rh, theta, s, W, Ph, qe, qt, rhoh, cs2h2, hg, Fr, Ft, S, core)
+    PfL = np.empty((Ni, Nj)); PfR = np.empty((Ni, Nj))
+    _forces_sph(rh, theta, s, W, Ph, qe, qt, rhoh, cs2h2, hg, Fr, Ft, S, core, PfL, PfR, hgo)
     if grav != 0.0:       # uniform inward radial body force (test problems only)
         for i in range(1, Ni + 1):
             for j in range(Nj + 1):
@@ -289,7 +324,7 @@ def hydro_sph_step(dt, r, theta, s, W, ur, ut, m, M, rho, ee, ei, er,
     # nodes), so it is damped explicitly (viscous Flanagan-Belytschko-type force on
     # the part of u_theta not explained by a 4th-order fit of its radial neighbours).
     Fd = np.zeros(r.shape)
-    if hg > 0.0:
+    if hgt > 0.0:
         for i in range(max(core, 1) + 1, Ni):
             for j in range(1, Nj):
                 im2 = i - 2 if i - 2 >= 1 else 1
@@ -298,8 +333,26 @@ def hydro_sph_step(dt, r, theta, s, W, ur, ut, m, M, rho, ee, ei, er,
                 rz = 0.25 * (rhoh[i - 1, j - 1] + rhoh[i - 1, j] + rhoh[i, j - 1] + rhoh[i, j])
                 cz = math.sqrt(0.25 * (cs2h2[i - 1, j - 1] + cs2h2[i - 1, j] + cs2h2[i, j - 1] + cs2h2[i, j]))
                 Sf = 0.5 * (S[i - 1, j] + S[i, j])
-                Fd[i, j] = -10.0 * hg * rz * cz * Sf * h
+                Fd[i, j] = -hgt * rz * cz * Sf * h
                 Ft[i, j] += Fd[i, j]
+    # viscous anti-hourglass on the angular sawtooth of u_r: damps the grid-scale
+    # mode without the elastic restoring force of the stiffness version (an elastic
+    # force stabilises low-l Rayleigh-Taylor modes; a viscous one only slows them).
+    Fv = np.zeros(r.shape)
+    if hgv > 0.0:
+        for i in range(1, Ni + 1):
+            iz = i - 1 if i == Ni else i
+            for j in range(0, Nj + 1):
+                hu = (ur[i, _mir(j - 2, Nj)] - 4.0 * ur[i, _mir(j - 1, Nj)] + 6.0 * ur[i, j]
+                      - 4.0 * ur[i, _mir(j + 1, Nj)] + ur[i, _mir(j + 2, Nj)]) / 6.0
+                ja = j - 1 if j >= 1 else 0
+                jb = j if j < Nj else Nj - 1
+                rz = 0.5 * (rhoh[iz, ja] + rhoh[iz, jb])
+                cz = math.sqrt(0.5 * (cs2h2[iz, ja] + cs2h2[iz, jb]))
+                # (the node mass over its radial extent) * c, i.e. rho c A
+                drn = 0.5 * (r[min(i + 1, Ni), j] - r[i - 1, j])
+                Fv[i, j] = -hgv * M[i, j] * cz / max(drn, 1e-300) * hu
+                Fr[i, j] += Fv[i, j]
     # ---- corrector: velocities
     ur0 = ur.copy(); ut0 = ut.copy()
     for i in range(1, Ni + 1):
@@ -345,7 +398,20 @@ def hydro_sph_step(dt, r, theta, s, W, ur, ut, m, M, rho, ee, ei, er,
         ut[0, j] = 0.0
     # ---- energies with the time-centred velocities (compatible work)
     heat = 0.0
-    if hg > 0.0:
+    if hgv > 0.0:
+        for i in range(1, Ni + 1):
+            for j in range(Nj + 1):
+                if Fv[i, j] != 0.0:
+                    wq = -Fv[i, j] * 0.5 * (ur0[i, j] + ur[i, j]) * dt
+                    ja = j - 1 if j >= 1 else 0
+                    jb = j if j < Nj else Nj - 1
+                    na = 2 if i < Ni else 1
+                    nb = 2 if ja != jb else 1
+                    for a in range(i - 1, i - 1 + na):
+                        for b in range(ja, ja + nb):
+                            ei[a, b] += wq / (na * nb) / m[a, b]
+                    heat += wq
+    if hgt > 0.0:
         for i in range(1, Ni):
             for j in range(1, Nj):
                 if Fd[i, j] != 0.0:
@@ -373,6 +439,13 @@ def hydro_sph_step(dt, r, theta, s, W, ur, ut, m, M, rho, ee, ei, er,
             ee[i, j] -= Peh[kk] * dV / m[i, j]
             hq = -(qe[i, j, 0] * dV0 + qe[i, j, 1] * dV1 + qt[i, j] * dVth)
             ei[i, j] += (-Pih[kk] * dV + hq) / m[i, j]
+            if i >= core:
+                # angular work done with the face pressures (compatible with the forces)
+                wc = -((PfR[i, j] - Ph[i, j]) * dVtR - (PfL[i, j] - Ph[i, j]) * dVtL)
+                pe = max(Peh[kk], 0.0); pt = pe + max(Pih[kk], 0.0)
+                fe = pe / pt if pt > 0.0 else 0.5
+                ee[i, j] += fe * wc / m[i, j]
+                ei[i, j] += (1.0 - fe) * wc / m[i, j]
             er[i, j] = max(er[i, j] - erh[i, j] * rhoh[i, j] / 3.0 * dV / m[i, j], 0.0)
             V0[i, j] += dV
             rho[i, j] = m[i, j] / V0[i, j]

@@ -2,7 +2,7 @@
 from common import *
 import json, time
 import noh, sedov, conduction, laser_absorption, alpha_stopping, burn_efficiency, hotspot_ignition
-import sedov2d, noh2d, acoustic2d, conduction2d
+import sedov2d, noh2d, acoustic2d, conduction2d, rt2d
 from sife.fusion import sigv_DT
 
 def bosch_hale():
@@ -21,7 +21,7 @@ for name, f in [("bosch_hale", bosch_hale), ("noh", noh.run), ("sedov", sedov.ru
                 ("laser_absorption", laser_absorption.run), ("alpha_stopping", alpha_stopping.run),
                 ("burn_efficiency", burn_efficiency.run), ("hotspot_ignition", hotspot_ignition.run),
                 ("sedov2d", sedov2d.run), ("noh2d", noh2d.run), ("acoustic2d", acoustic2d.run),
-                ("conduction2d", conduction2d.run)]:
+                ("conduction2d", conduction2d.run), ("rt2d", rt2d.run)]:
     t0 = time.time()
     res[name] = f()
     print(f"{name:18s} done in {time.time()-t0:6.1f} s", flush=True)

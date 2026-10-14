@@ -100,9 +100,14 @@ def main():
     ap.add_argument("--zone-scale", type=float, default=1.0, help="radial resolution factor vs 1D design")
     ap.add_argument("--illum", nargs="*", help="l:a  laser intensity Legendre modes")
     ap.add_argument("--pert", nargs="*", help="interface:l:amplitude_um  surface perturbations")
+    ap.add_argument("--rough", nargs="*", help="interface:lmin:lmax:rms_um  multimode roughness, random amplitudes "
+                    "with a flat spectrum, normalised to the given rms (seed --seed)")
+    ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--core", type=int, default=-1,
                     help="innermost rings treated as a quasi-1D isobaric core (default -1: all gas rings)")
     ap.add_argument("--hg", type=float, default=None, help="anti-hourglass stiffness (default Options2D.hourglass)")
+    ap.add_argument("--hgo", type=int, default=None, help="order of the anti-hourglass difference (4 or 6)")
+    ap.add_argument("--hgv", type=float, default=None, help="viscous anti-hourglass coefficient")
     ap.add_argument("--no-burn", action="store_true")
     ap.add_argument("--t-end", type=float, default=None)
     ap.add_argument("--wall", type=float, default=None, help="wall-clock limit [s]")
@@ -112,6 +117,13 @@ def main():
         p.update(json.load(open(a.params)))
     illum = {l: amp for l, amp in parse_modes(a.illum, 2)}
     pert = [(k, l, amp * 1e-4) for k, l, amp in parse_modes(a.pert, 3)]
+    rng = np.random.default_rng(a.seed)
+    for k, lmin, lmax, rms in parse_modes(a.rough, 4):
+        ls = np.arange(lmin, lmax + 1)
+        c = rng.normal(size=len(ls))
+        # rms over the sphere of sum c_l P_l is sqrt(sum c_l^2 / (2 l + 1))
+        c *= rms * 1e-4 / np.sqrt(np.sum(c ** 2 / (2 * ls + 1)))
+        pert += [(k, int(l), float(cl)) for l, cl in zip(ls, c)]
     os.makedirs(a.out, exist_ok=True)
     sim = build(p, a.nth, not a.full, illum, pert, a.zone_scale, core=a.core)
     print(f"2D mesh {sim.Ni} x {sim.Nj} zones, illumination {illum}, perturbations {pert}", flush=True)
@@ -119,6 +131,10 @@ def main():
         sim.o.burn = False
     if a.hg is not None:
         sim.o.hourglass = a.hg
+    if a.hgo is not None:
+        sim.o.hourglass_order = a.hgo
+    if a.hgv is not None:
+        sim.o.hourglass_visc = a.hgv
     peak = {"r": 0.0}
 
     def stop(s):
