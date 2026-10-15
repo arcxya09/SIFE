@@ -278,13 +278,13 @@ class SimulationALE(Simulation2D):
         second = o.remap_order == 2
         Pr = self.er * self.rho / 3.0
         ale_rates(Q, c, self.Pe, self.Pi, Pr, w, Aeff, Seff, Vm, rc, self.half, o.core_rings, second,
-                  o.gravity, o.fix_outer, L1, div, fo1)
+                  o.gravity, o.fix_outer, o.shock_hlle, L1, div, fo1)
         sh = self._shock_flag(div, Q)
         self._recover(U0 + dt * L1, V1, sh)
         Q2, c2 = self._prims()
         Pr = self.er * self.rho / 3.0
         ale_rates(Q2, c2, self.Pe, self.Pi, Pr, w, Aeff, Seff, Vm, rc, self.half, o.core_rings, second,
-                  o.gravity, o.fix_outer, L2, div, fo2)
+                  o.gravity, o.fix_outer, o.shock_hlle, L2, div, fo2)
         sh = sh | self._shock_flag(div, Q2)
         self.rn = rn1
         self.r = np.ascontiguousarray(np.repeat(rn1[:, None], Nj + 1, 1))

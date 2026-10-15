@@ -159,8 +159,34 @@ def _hllc(rL, unL, utL, pL, eL, cL, rR, unR, utR, pR, eR, cR, w, out):
     out[5] = side
 
 
+@njit(cache=True)
+def _hlle(rL, unL, utL, pL, eL, cL, rR, unR, utR, pR, eR, cR, out):
+    """HLLE flux through a fixed face (same output layout as _hllc).  Used on spoke
+    faces next to strong radial shocks, where HLLC develops the odd-even
+    (carbuncle) instability of grid-aligned shocks."""
+    SL = min(unL - cL, unR - cR, 0.0)
+    SR = max(unL + cL, unR + cR, 0.0)
+    EL = rL * eL
+    ER = rR * eR
+    FL0 = rL * unL; FR0 = rR * unR
+    FL1 = rL * unL * unL + pL; FR1 = rR * unR * unR + pR
+    FL2 = rL * unL * utL; FR2 = rR * unR * utR
+    FL3 = (EL + pL) * unL; FR3 = (ER + pR) * unR
+    d = max(SR - SL, 1e-300)
+    out[0] = (SR * FL0 - SL * FR0 + SL * SR * (rR - rL)) / d
+    out[1] = (SR * FL1 - SL * FR1 + SL * SR * (rR * unR - rL * unL)) / d
+    out[2] = (SR * FL2 - SL * FR2 + SL * SR * (rR * utR - rL * utL)) / d
+    out[3] = (SR * FL3 - SL * FR3 + SL * SR * (ER - EL)) / d
+    den = rL * (SL - unL) - rR * (SR - unR)
+    if abs(den) < 1e-300:
+        out[4] = 0.5 * (unL + unR)
+    else:
+        out[4] = (pR - pL + rL * unL * (SL - unL) - rR * unR * (SR - unR)) / den
+    out[5] = 0 if out[0] >= 0.0 else 1
+
+
 @njit(parallel=True, cache=True)
-def ale_rates(Q, c, Pe, Pi, Pr, w, Aeff, Seff, V, rc, half, core, second, grav, wall, L, div, flux_out):
+def ale_rates(Q, c, Pe, Pi, Pr, w, Aeff, Seff, V, rc, half, core, second, grav, wall, shock_fix, L, div, flux_out):
     """Time derivatives L[q, i, j] of the conserved cell totals (mass, radial and
     polar momentum, total energy, electron / pdV-ion / radiation energy, DT number,
     material masses).  div[i, j] = sum over faces of A * u_contact (Lagrangian
@@ -271,8 +297,20 @@ def ale_rates(Q, c, Pe, Pi, Pr, w, Aeff, Seff, V, rc, half, core, second, grav, 
                 jR = jL
                 rR = rL; uR = -uL; tR = tL; pR = pL; eiR = eiL
                 cR = c[i, jL]
-            _hllc(rL, uL, tL, pL, eiL + 0.5 * (uL * uL + tL * tL), c[i, jL],
-                  rR, uR, tR, pR, eiR + 0.5 * (uR * uR + tR * tR), cR, 0.0, out)
+            # strong radial shock in either neighbouring column -> HLLE (carbuncle fix)
+            strong = False
+            if shock_fix > 0.0 and i > 0 and i < Ni - 1:
+                for k in (jL, jR):
+                    pa = Q[QP, i - 1, k]
+                    pb = Q[QP, i + 1, k]
+                    if abs(pa - pb) > shock_fix * min(pa, pb):
+                        strong = True
+            if strong:
+                _hlle(rL, uL, tL, pL, eiL + 0.5 * (uL * uL + tL * tL), c[i, jL],
+                      rR, uR, tR, pR, eiR + 0.5 * (uR * uR + tR * tR), cR, out)
+            else:
+                _hllc(rL, uL, tL, pL, eiL + 0.5 * (uL * uL + tL * tL), c[i, jL],
+                      rR, uR, tR, pR, eiR + 0.5 * (uR * uR + tR * tR), cR, 0.0, out)
             FT[i, j, UM] = out[0]
             FT[i, j, UMT] = out[1]
             FT[i, j, UMR] = out[2]

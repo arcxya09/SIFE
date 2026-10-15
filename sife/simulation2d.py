@@ -77,6 +77,7 @@ class Options2D(Options):
     dual_eta: float = 0.01        # ALE: internal / kinetic ratio below which the pdV ion energy is used
     shock_jump: float = 0.3       # ALE: relative pressure jump that marks a shock (dual energy)
     mesh_motion: str = "contact"  # ALE ring motion: "contact" (mean HLLC S*, Lagrangian in 1D) or "mass"
+    shock_hlle: float = 0.5       # ALE: HLLE on spoke faces where the radial pressure jump exceeds this (0: off)
     mesh_relax: float = 5.0       # ALE: steps over which a ring relaxes to its initial enclosed mass (0: off)
     mesh_qmin: float = 0.2        # ALE: limit on neighbouring cell-size ratio relative to the initial mesh
     axis_tie: bool = True         # axis nodes move rigidly with their neighbour spoke
