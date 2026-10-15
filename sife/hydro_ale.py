@@ -160,11 +160,12 @@ def _hllc(rL, unL, utL, pL, eL, cL, rR, unR, utR, pR, eR, cR, w, out):
 
 
 @njit(parallel=True, cache=True)
-def ale_rates(Q, c, Pe, Pi, Pr, w, Aeff, Seff, V, rc, half, core, second, grav, L, div, flux_out):
+def ale_rates(Q, c, Pe, Pi, Pr, w, Aeff, Seff, V, rc, half, core, second, grav, wall, L, div, flux_out):
     """Time derivatives L[q, i, j] of the conserved cell totals (mass, radial and
     polar momentum, total energy, electron / pdV-ion / radiation energy, DT number,
     material masses).  div[i, j] = sum over faces of A * u_contact (Lagrangian
-    volume rate).  flux_out[q] = rate leaving through the outer boundary."""
+    volume rate).  flux_out[q] = rate leaving through the outer boundary, which is
+    a vacuum free surface, or a reflecting wall if wall is True."""
     nq, Ni, Nj = Q.shape
     nu = L.shape[0]
     nmat = nu - UX
@@ -212,7 +213,9 @@ def ale_rates(Q, c, Pe, Pi, Pr, w, Aeff, Seff, V, rc, half, core, second, grav, 
                 iR = iL
                 cR = c[iL, j]
                 rR = rL; uR = uL; tR = tL; pR = pL; eiR = eiL
-            if i == Ni:
+            if i == Ni and wall:
+                uR = -uL
+            if i == Ni and not wall:
                 dv_ = max(uL - w[i], 0.0)       # material leaving through the outer ring; nothing enters
                 out[0] = rL * dv_
                 out[1] = rL * uL * dv_
@@ -414,20 +417,28 @@ def mesh_velocity(rn, m, ur, ratio0, qmin):
 
 
 @njit(cache=True)
-def ale_cfl(rn, rc, theta, ur, ut, c, w, core, cfl):
+def ale_cfl(rn, rc, theta, ur, ut, c, w, core, cfl, loc):
+    """Stable time step; loc = [i, j, kind] of the limiting cell
+    (kind 0: converging rings, 1: radial CFL, 2: polar CFL)."""
     Ni, Nj = c.shape
     dt = 1e30
     for i in range(Ni):
         dr = rn[i + 1] - rn[i]
         dw = w[i] - w[i + 1]
         if dw > 0.0:                    # converging rings
-            dt = min(dt, 0.3 * dr / dw)
+            d = 0.3 * dr / dw
+            if d < dt:
+                dt = d; loc[0] = i; loc[1] = 0; loc[2] = 0
         for j in range(Nj):
             wc = 0.5 * (w[i] + w[i + 1])
-            dt = min(dt, cfl * dr / (abs(ur[i, j] - wc) + c[i, j]))
+            d = cfl * dr / (abs(ur[i, j] - wc) + c[i, j])
+            if d < dt:
+                dt = d; loc[0] = i; loc[1] = j; loc[2] = 1
             if i >= core:
                 dl = rc[i, j] * (theta[j + 1] - theta[j])
-                dt = min(dt, cfl * dl / (abs(ut[i, j]) + c[i, j]))
+                d = cfl * dl / (abs(ut[i, j]) + c[i, j])
+                if d < dt:
+                    dt = d; loc[0] = i; loc[1] = j; loc[2] = 2
     return dt
 
 

@@ -77,6 +77,7 @@ class Options2D(Options):
     dual_eta: float = 0.01        # ALE: internal / kinetic ratio below which the pdV ion energy is used
     shock_jump: float = 0.3       # ALE: relative pressure jump that marks a shock (dual energy)
     mesh_motion: str = "contact"  # ALE ring motion: "contact" (mean HLLC S*, Lagrangian in 1D) or "mass"
+    mesh_relax: float = 5.0       # ALE: steps over which a ring relaxes to its initial enclosed mass (0: off)
     mesh_qmin: float = 0.2        # ALE: limit on neighbouring cell-size ratio relative to the initial mesh
     axis_tie: bool = True         # axis nodes move rigidly with their neighbour spoke
     hourglass_visc: float = 0.0   # viscous anti-hourglass on the angular sawtooth of u_r
@@ -472,7 +473,8 @@ class Simulation2D:
                 print(f"  step {self.nstep:8d} t={self.t*1e9:8.4f} ns dt={self.dt:.2e} "
                       f"rho_max={self.rho.max():8.2f} Ti_max={self.Ti.max()/1e3:7.3f} keV "
                       f"E_abs={self.E_abs/1e13:8.4f} MJ Yield={self.E_fus/1e13:9.4f} MJ "
-                      f"Eerr={self.energy_error():+.2e}  ({_time.time()-t0:.0f}s)", flush=True)
+                      f"Eerr={self.energy_error():+.2e}  ({_time.time()-t0:.0f}s)"
+                      + (f" dt@{tuple(int(x) for x in self._dtloc)}" if hasattr(self, "_dtloc") else ""), flush=True)
             if stop is not None and stop(self):
                 break
             if wall_limit and _time.time() - t0 > wall_limit:

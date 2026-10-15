@@ -88,6 +88,7 @@ class SimulationALE(Simulation2D):
         self.vr = np.zeros((Ni, Nj)); self.vt = np.zeros((Ni, Nj))
         self.E_out = 0.0; self.M_out = 0.0
         dr0 = np.diff(self.rn)
+        self._M0 = np.cumsum(self.m.sum(1))[:-1]
         self._ratio0 = dr0[:-1] / dr0[1:]
         self.E0 = self.total_energy()
         self.hist = {}
@@ -235,6 +236,22 @@ class SimulationALE(Simulation2D):
                 Q, c = self._prims()
             w = np.empty(self.Ni + 1)
             radial_contact(Q, c, self.half, o.core_rings, o.remap_order == 2, self.theta, w)
+            if o.mesh_relax > 0 and hasattr(self, "_M0") and self.dt > 0:
+                # pull each ring back toward the radius that encloses its initial mass, when it has drifted more than a quarter cell
+                # (averaged over angle): stops slow drift and odd-even ring spacing
+                # where columns disagree (shock fronts not aligned with rings)
+                Ni = self.Ni
+                M = np.cumsum(self.m.sum(1))[:-1]
+                dmu = np.cos(self.theta[:-1]) - np.cos(self.theta[1:])
+                rr = self.rn[1:Ni]
+                rho_f = 0.5 * (self.rho[:-1] + self.rho[1:])
+                dMdr = 2 * np.pi * rr ** 2 * (rho_f * dmu[None, :]).sum(1)
+                dr = np.diff(self.rn)
+                dmin = np.minimum(dr[:-1], dr[1:])
+                x = (self._M0 - M) / dMdr          # ring displacement to its initial enclosed mass
+                x = np.sign(x) * np.maximum(np.abs(x) - 0.25 * dmin, 0.0)   # dead band: act only on large drift
+                d = np.clip(x / o.mesh_relax, -0.1 * dmin, 0.1 * dmin)
+                w[1:Ni] += d / self.dt
             if o.mesh_qmin > 0:
                 regularize_mesh(self.rn, w, self._ratio0, o.mesh_qmin)
             return w
@@ -261,13 +278,13 @@ class SimulationALE(Simulation2D):
         second = o.remap_order == 2
         Pr = self.er * self.rho / 3.0
         ale_rates(Q, c, self.Pe, self.Pi, Pr, w, Aeff, Seff, Vm, rc, self.half, o.core_rings, second,
-                  o.gravity, L1, div, fo1)
+                  o.gravity, o.fix_outer, L1, div, fo1)
         sh = self._shock_flag(div, Q)
         self._recover(U0 + dt * L1, V1, sh)
         Q2, c2 = self._prims()
         Pr = self.er * self.rho / 3.0
         ale_rates(Q2, c2, self.Pe, self.Pi, Pr, w, Aeff, Seff, Vm, rc, self.half, o.core_rings, second,
-                  o.gravity, L2, div, fo2)
+                  o.gravity, o.fix_outer, L2, div, fo2)
         sh = sh | self._shock_flag(div, Q2)
         self.rn = rn1
         self.r = np.ascontiguousarray(np.repeat(rn1[:, None], Nj + 1, 1))
@@ -294,7 +311,8 @@ class SimulationALE(Simulation2D):
         rc = np.repeat((0.5 * (self.rn[1:] + self.rn[:-1]))[:, None], Nj, 1)
         c = np.sqrt(np.maximum(self.cs2, 0.0) + 4.0 / 9.0 * self.er + 1e-30)
         w = self._mesh_w()
-        dtc = ale_cfl(self.rn, rc, self.theta, self.vr, self.vt, c, w, o.core_rings, o.cfl)
+        self._dtloc = np.zeros(3, np.int64)
+        dtc = ale_cfl(self.rn, rc, self.theta, self.vr, self.vt, c, w, o.core_rings, o.cfl, self._dtloc)
         rel = max(np.max(np.abs(self.Te - Te_old) / (Te_old + 1.0)),
                   np.max(np.abs(self.Ti - Ti_old) / (Ti_old + 1.0)))
         f = min(1.25, o.dT_rel / max(rel, 1e-12))
