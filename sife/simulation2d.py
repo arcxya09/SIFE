@@ -78,6 +78,7 @@ class Options2D(Options):
     dual_eta: float = 0.01        # ALE: internal / kinetic ratio below which the pdV ion energy is used
     shock_jump: float = 0.3       # ALE: relative pressure jump that marks a shock (dual energy)
     mesh_motion: str = "contact"  # ALE ring motion: "contact" (mean HLLC S*, Lagrangian in 1D) or "mass"
+    dt_floor_cfl: float = 0.02      # ALE: the temperature limiter never cuts dt below this x CFL step
     checkpoint: str = ""            # path of a periodic restart file ("": none)
     checkpoint_every: float = 600.0  # wall-clock seconds between restart files
     shock_hlle: float = 0.5       # ALE: HLLE on spoke faces where the radial pressure jump exceeds this (0: off)
@@ -502,7 +503,8 @@ class Simulation2D:
                       f"rho_max={self.rho.max():8.2f} Ti_max={self.Ti.max()/1e3:7.3f} keV "
                       f"E_abs={self.E_abs/1e13:8.4f} MJ Yield={self.E_fus/1e13:9.4f} MJ "
                       f"Eerr={self.energy_error():+.2e}  ({_time.time()-t0:.0f}s)"
-                      + (f" dt@{tuple(int(x) for x in self._dtloc)}" if hasattr(self, "_dtloc") else ""), flush=True)
+                      + (f" dt@{tuple(int(x) for x in self._dtloc)}" if hasattr(self, "_dtloc") else "")
+                      + (f" dT@{tuple(int(x) for x in self._dTloc)}" if hasattr(self, "_dTloc") else ""), flush=True)
             if o.checkpoint and _time.time() - t_ck > o.checkpoint_every:
                 self.save_checkpoint(o.checkpoint); t_ck = _time.time()
             if stop is not None and stop(self):

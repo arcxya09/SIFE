@@ -313,10 +313,16 @@ class SimulationALE(Simulation2D):
         w = self._mesh_w()
         self._dtloc = np.zeros(3, np.int64)
         dtc = ale_cfl(self.rn, rc, self.theta, self.vr, self.vt, c, w, o.core_rings, o.cfl, self._dtloc)
-        rel = max(np.max(np.abs(self.Te - Te_old) / (Te_old + 1.0)),
-                  np.max(np.abs(self.Ti - Ti_old) / (Ti_old + 1.0)))
+        re = np.abs(self.Te - Te_old) / (Te_old + 1.0)
+        ri = np.abs(self.Ti - Ti_old) / (Ti_old + 1.0)
+        rel = max(re.max(), ri.max())
+        self._dTloc = np.unravel_index(np.argmax(np.maximum(re, ri)), re.shape)
         f = min(1.25, o.dT_rel / max(rel, 1e-12))
-        self.dt = max(min(dtc, dt * f, o.dt_max), o.dt_min)
+        # the temperature-change limiter may cut the step well below the CFL step, but not
+        # without bound: a cell whose temperature jumps by a step-independent amount (an
+        # energy-floor or dual-energy switch) would otherwise drive dt down to dt_min and
+        # freeze the run
+        self.dt = max(min(dtc, max(dt * f, o.dt_floor_cfl * dtc), o.dt_max), o.dt_min)
         if self.laser is not None and hasattr(self.laser.power, "t_ns"):
             tb = self.laser.power.t_ns * 1e-9
             nxt = tb[tb > self.t + 1e-18]
