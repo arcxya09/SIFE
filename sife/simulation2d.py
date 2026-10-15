@@ -24,6 +24,7 @@ import time as _time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
+import os
 import numpy as np
 from numba import njit, prange
 
@@ -77,6 +78,8 @@ class Options2D(Options):
     dual_eta: float = 0.01        # ALE: internal / kinetic ratio below which the pdV ion energy is used
     shock_jump: float = 0.3       # ALE: relative pressure jump that marks a shock (dual energy)
     mesh_motion: str = "contact"  # ALE ring motion: "contact" (mean HLLC S*, Lagrangian in 1D) or "mass"
+    checkpoint: str = ""            # path of a periodic restart file ("": none)
+    checkpoint_every: float = 600.0  # wall-clock seconds between restart files
     shock_hlle: float = 0.5       # ALE: HLLE on spoke faces where the radial pressure jump exceeds this (0: off)
     mesh_relax: float = 5.0       # ALE: steps over which a ring relaxes to its initial enclosed mass (0: off)
     mesh_qmin: float = 0.2        # ALE: limit on neighbouring cell-size ratio relative to the initial mesh
@@ -455,12 +458,36 @@ class Simulation2D:
         sd = self.o.snap_dt
         return sd(self.t) if callable(sd) else sd
 
+    # ------------------------------------------------------------------ checkpoint / restart
+    _CK_SKIP = ("laser", "o")
+
+    def save_checkpoint(self, path):
+        """Write the full simulation state (arrays, scalars, history, snapshots) so a
+        run killed by a crash or reboot can continue with load_checkpoint."""
+        import pickle
+        state = {k: v for k, v in self.__dict__.items() if k not in self._CK_SKIP and not callable(v)}
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as fh:
+            pickle.dump(state, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+
+    def load_checkpoint(self, path):
+        import pickle
+        with open(path, "rb") as fh:
+            state = pickle.load(fh)
+        self.__dict__.update(state)
+        self._resumed = True
+        return self
+
     def run(self, t_end, stop: Optional[Callable] = None, max_steps=10_000_000, wall_limit=None):
         o = self.o
         if self.laser is not None:
             self._R_beam0 = float(self.r[-1].mean())
         t0 = _time.time()
-        self.snapshot(); self._next_snap = self.t + self._snap_dt()
+        if not getattr(self, "_resumed", False):
+            self.snapshot(); self._next_snap = self.t + self._snap_dt()
+        self._resumed = False
+        t_ck = _time.time()
         while self.t < t_end and self.nstep < max_steps:
             if self.t + self.dt > t_end:
                 self.dt = t_end - self.t
@@ -476,6 +503,8 @@ class Simulation2D:
                       f"E_abs={self.E_abs/1e13:8.4f} MJ Yield={self.E_fus/1e13:9.4f} MJ "
                       f"Eerr={self.energy_error():+.2e}  ({_time.time()-t0:.0f}s)"
                       + (f" dt@{tuple(int(x) for x in self._dtloc)}" if hasattr(self, "_dtloc") else ""), flush=True)
+            if o.checkpoint and _time.time() - t_ck > o.checkpoint_every:
+                self.save_checkpoint(o.checkpoint); t_ck = _time.time()
             if stop is not None and stop(self):
                 break
             if wall_limit and _time.time() - t0 > wall_limit:

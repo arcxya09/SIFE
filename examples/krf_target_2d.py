@@ -115,6 +115,8 @@ def main():
     ap.add_argument("--no-burn", action="store_true")
     ap.add_argument("--t-end", type=float, default=None)
     ap.add_argument("--wall", type=float, default=None, help="wall-clock limit [s]")
+    ap.add_argument("--no-checkpoint", action="store_true",
+                    help="do not write <out>/checkpoint.pkl every 10 min (a rerun with the same --out resumes from it)")
     a = ap.parse_args()
     p = dict(DEFAULT)
     if a.params:
@@ -131,6 +133,12 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     sim = build(p, a.nth, not a.full, illum, pert, a.zone_scale, core=a.core, solver=a.solver)
     print(f"2D mesh {sim.Ni} x {sim.Nj} zones, illumination {illum}, perturbations {pert}", flush=True)
+    ck = os.path.join(a.out, "checkpoint.pkl")
+    if not a.no_checkpoint:
+        sim.o.checkpoint = ck
+        if os.path.exists(ck):
+            sim.load_checkpoint(ck)
+            print(f"resumed from {ck} at t = {sim.t*1e9:.4f} ns, step {sim.nstep}", flush=True)
     if a.no_burn:
         sim.o.burn = False
     if a.hg is not None:
@@ -155,6 +163,8 @@ def main():
     json.dump(dict(params=p, diagnostics=d), open(os.path.join(a.out, "summary.json"), "w"), indent=1)
     np.savez_compressed(os.path.join(a.out, "history.npz"), **sim.history())
     sim.save(os.path.join(a.out, "snapshots2d.npz"))
+    if os.path.exists(ck):
+        os.remove(ck)
     return sim, d
 
 

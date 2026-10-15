@@ -9,6 +9,7 @@ mkdir -p output/scan
 run() {   # name, args...
     name=$1; shift
     if pgrep -f "output/scan/$name " > /dev/null; then echo "skip $name (running)"; return; fi
+    if [ -f output/scan/$name/summary.json ]; then echo "skip $name (done)"; return; fi
     NUMBA_NUM_THREADS=$T setsid -f nohup $PY examples/krf_target_2d.py --out output/scan/$name "$@" \
         > output/scan/$name.log 2>&1 < /dev/null
     echo "started $name"
